@@ -6,10 +6,13 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
 from pakjobs_core.domain.enums import AnalyticsEventType, NotificationChannel, NotificationStatus
+from pakjobs_core.logging import get_logger
 from pakjobs_core.models import JobAlert, Notification
+from pakjobs_core.services.security import verify_unsubscribe
 
 from app.core.deps import CurrentUser, SessionDep
 from app.core.errors import ConflictError, NotFoundError
@@ -22,6 +25,7 @@ from app.schemas.common import (
 )
 from app.services.analytics_service import record_event
 
+logger = get_logger("api.alerts")
 router = APIRouter(tags=["alerts"])
 
 MAX_ALERTS_PER_USER = 20
@@ -125,6 +129,38 @@ def _preview_conditions(alert: JobAlert):
 
     since = datetime.now(timezone.utc) - timedelta(days=30)
     return _Preview()._conditions(alert, since)
+
+
+class UnsubscribeRequest(BaseModel):
+    alert: uuid.UUID
+    token: str = Field(..., min_length=8, max_length=128)
+
+
+@router.post("/alerts/unsubscribe", response_model=MessageResponse)
+async def unsubscribe_alert(payload: UnsubscribeRequest, session: SessionDep):
+    """One-click unsubscribe from an email link — deliberately unauthenticated.
+
+    The signed token proves the request came from a message we sent, so a recipient can stop the
+    mail without signing in. Bulk senders without a working one-click unsubscribe get filtered as
+    spam, and requiring a login to stop email is user-hostile.
+
+    The response is identical whether or not the alert exists, so the endpoint cannot be used to
+    probe for valid alert ids.
+    """
+    done = MessageResponse(message="You will no longer receive emails for this alert.")
+
+    if not verify_unsubscribe(str(payload.alert), payload.token):
+        raise NotFoundError("This unsubscribe link is not valid.")
+
+    alert = (
+        await session.execute(select(JobAlert).where(JobAlert.id == payload.alert))
+    ).scalar_one_or_none()
+    if alert is None:
+        return done
+
+    alert.is_active = False
+    logger.info("alert.unsubscribed", alert_id=str(alert.id))
+    return done
 
 
 @router.get("/notifications", response_model=list[NotificationResponse])

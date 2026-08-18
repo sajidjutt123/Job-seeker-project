@@ -189,6 +189,7 @@ covered by tests that assert every admin route 403s for a regular user.
   `posted_by_user_id`, `is_featured`, `is_sponsored` and the `employer` role already exist.
 - **Education ecosystem** — `institutions`, `campuses`, `programs`, `admission_cycles`,
   `scholarships`, `courses` tables exist with no API surface yet.
-- **Notification channels** — `NotificationChannelAdapter` has an email implementation; push,
-  WhatsApp and Telegram are enum values awaiting adapters.
+- **Notification channels** — `NotificationChannelAdapter` has an email implementation (console,
+  SMTP and Resend), and carries optional per-message headers so RFC 8058 one-click unsubscribe
+  works; push, WhatsApp and Telegram are enum values awaiting adapters.
 - **Monetization** — featured/sponsored flags and `featured_until` are on the job model.

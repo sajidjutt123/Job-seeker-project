@@ -62,7 +62,22 @@ Analytics payloads are sanitised: keys matching `email`, `phone`, `password`, `t
 `address`, `ip` or `user_agent` are dropped before persistence (`_sanitize` in
 `analytics_service.py`).
 
-## 6. Candidate safety
+## 6. Email consent and opt-out
+
+Alert digests are only sent to a recipient who created that alert. Every digest carries:
+
+- a visible unsubscribe link in **both** the HTML and plain-text bodies, and
+- `List-Unsubscribe` / `List-Unsubscribe-Post` headers (RFC 8058) so Gmail and Outlook render a
+  native one-click unsubscribe.
+
+The unsubscribe endpoint is deliberately **unauthenticated**. The link carries an HMAC signature
+over the alert id keyed by the application secret, which proves the request came from a message we
+sent. Requiring a login to stop email is user-hostile, and a sender without a working one-click
+unsubscribe gets filtered as spam. The token cannot be forged or enumerated, only ever disables
+the single alert it names, and returns an identical response for unknown ids so it cannot be used
+to probe for valid alerts.
+
+## 7. Candidate safety
 
 The validator rejects listings matching known advance-fee fraud patterns (registration/processing
 fees, "earn Rs X daily", pay-to-apply) outright — they never reach the database. MLM-style
@@ -71,7 +86,7 @@ language flags the job for human review rather than auto-publishing.
 The job detail page carries a standing warning that legitimate employers never charge a fee, and
 every listing can be reported by anyone, signed in or not.
 
-## 7. Security posture
+## 8. Security posture
 
 - Argon2id password hashing; passwords never logged or returned.
 - Refresh tokens stored hashed; revocable server-side.
@@ -84,7 +99,7 @@ every listing can be reported by anyone, signed in or not.
 - All admin actions are audit-logged with actor and hashed IP.
 - Admin authorization is enforced server-side on every route and covered by tests.
 
-## 8. Before you launch
+## 9. Before you launch
 
 This document describes what the software does. It is not legal advice. Before operating a public
 deployment:

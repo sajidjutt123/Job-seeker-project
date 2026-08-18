@@ -38,7 +38,10 @@ class NotificationChannelAdapter(abc.ABC):
     channel: str
 
     @abc.abstractmethod
-    def send(self, *, to: str, subject: str, text_body: str, html_body: str | None = None) -> DeliveryResult: ...
+    def send(
+        self, *, to: str, subject: str, text_body: str,
+        html_body: str | None = None, headers: dict[str, str] | None = None,
+    ) -> DeliveryResult: ...
 
 
 class ConsoleEmailAdapter(NotificationChannelAdapter):
@@ -46,21 +49,32 @@ class ConsoleEmailAdapter(NotificationChannelAdapter):
 
     channel = NotificationChannel.EMAIL
 
-    def send(self, *, to: str, subject: str, text_body: str, html_body: str | None = None) -> DeliveryResult:
-        logger.info("email.console", to=to, subject=subject, body_preview=text_body[:400])
+    def send(
+        self, *, to: str, subject: str, text_body: str,
+        html_body: str | None = None, headers: dict[str, str] | None = None,
+    ) -> DeliveryResult:
+        logger.info(
+            "email.console", to=to, subject=subject, body_preview=text_body[:400],
+            headers=headers or {},
+        )
         return DeliveryResult(ok=True, detail="logged to console (EMAIL_PROVIDER=console)")
 
 
 class SMTPEmailAdapter(NotificationChannelAdapter):
     channel = NotificationChannel.EMAIL
 
-    def send(self, *, to: str, subject: str, text_body: str, html_body: str | None = None) -> DeliveryResult:
+    def send(
+        self, *, to: str, subject: str, text_body: str,
+        html_body: str | None = None, headers: dict[str, str] | None = None,
+    ) -> DeliveryResult:
         if not settings.smtp_host:
             return DeliveryResult(ok=False, detail="SMTP_HOST is not configured")
         message = EmailMessage()
         message["From"] = settings.email_from
         message["To"] = to
         message["Subject"] = subject
+        for key, value in (headers or {}).items():
+            message[key] = value
         message.set_content(text_body)
         if html_body:
             message.add_alternative(html_body, subtype="html")
@@ -80,7 +94,10 @@ class SMTPEmailAdapter(NotificationChannelAdapter):
 class ResendEmailAdapter(NotificationChannelAdapter):
     channel = NotificationChannel.EMAIL
 
-    def send(self, *, to: str, subject: str, text_body: str, html_body: str | None = None) -> DeliveryResult:
+    def send(
+        self, *, to: str, subject: str, text_body: str,
+        html_body: str | None = None, headers: dict[str, str] | None = None,
+    ) -> DeliveryResult:
         if not settings.resend_api_key:
             return DeliveryResult(ok=False, detail="RESEND_API_KEY is not configured")
         try:
@@ -93,6 +110,7 @@ class ResendEmailAdapter(NotificationChannelAdapter):
                     "subject": subject,
                     "text": text_body,
                     **({"html": html_body} if html_body else {}),
+                    **({"headers": headers} if headers else {}),
                 },
                 timeout=20,
                 verify=http_verify(),
@@ -144,7 +162,14 @@ class NotificationService:
         self.session.flush()
         return notification
 
-    def deliver(self, notification: Notification, *, to_email: str, html_body: str | None = None) -> bool:
+    def deliver(
+        self,
+        notification: Notification,
+        *,
+        to_email: str,
+        html_body: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> bool:
         notification.attempts += 1
         if notification.channel != NotificationChannel.EMAIL:
             notification.status = NotificationStatus.FAILED
@@ -152,7 +177,8 @@ class NotificationService:
             return False
 
         result = self.email.send(
-            to=to_email, subject=notification.subject, text_body=notification.body or "", html_body=html_body
+            to=to_email, subject=notification.subject, text_body=notification.body or "",
+            html_body=html_body, headers=headers,
         )
         if result.ok:
             notification.status = NotificationStatus.SENT
@@ -166,8 +192,19 @@ class NotificationService:
 
 # --- message rendering ------------------------------------------------------
 
-def render_alert_email(alert_name: str, jobs: Sequence[Job], web_base_url: str) -> tuple[str, str, str]:
-    """Return (subject, text_body, html_body) for a job-alert digest."""
+def render_alert_email(
+    alert_name: str,
+    jobs: Sequence[Job],
+    web_base_url: str,
+    *,
+    unsubscribe_url: str | None = None,
+) -> tuple[str, str, str]:
+    """Return (subject, text_body, html_body) for a job-alert digest.
+
+    `unsubscribe_url` should always be supplied for real sends: bulk senders without a working
+    one-click unsubscribe get filtered as spam, and recipients deserve a way out that does not
+    require signing in.
+    """
     count = len(jobs)
     subject = f"{count} new job{'s' if count != 1 else ''} for “{alert_name}”"
 
@@ -186,6 +223,14 @@ def render_alert_email(alert_name: str, jobs: Sequence[Job], web_base_url: str) 
             f"</td></tr>"
         )
     text_lines += ["", f"Manage your alerts: {web_base_url}/dashboard/alerts"]
+    if unsubscribe_url:
+        text_lines += [f"Stop this alert: {unsubscribe_url}"]
+
+    unsubscribe_html = (
+        f' or <a href="{unsubscribe_url}" style="color:#0f766e">unsubscribe from this alert</a>.'
+        if unsubscribe_url
+        else "."
+    )
 
     html_body = f"""<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
 <div style="max-width:560px;margin:0 auto;padding:24px">
@@ -195,7 +240,7 @@ def render_alert_email(alert_name: str, jobs: Sequence[Job], web_base_url: str) 
     <table style="width:100%;border-collapse:collapse">{''.join(html_rows)}</table>
     <p style="margin:20px 0 0;font-size:12px;color:#64748b">
       You are receiving this because you created a job alert on RozgarPK.
-      <a href="{web_base_url}/dashboard/alerts" style="color:#2563eb">Manage alerts</a>.
+      <a href="{web_base_url}/dashboard/alerts" style="color:#0f766e">Manage alerts</a>{unsubscribe_html}
     </p>
   </div>
 </div></body></html>"""

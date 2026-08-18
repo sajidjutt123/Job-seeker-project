@@ -441,3 +441,57 @@ class TestFrontendRouteGuards:
             pytest.skip("web server is not running")
         response = httpx.get(f"{self.WEB_URL}/dashboard", follow_redirects=False, timeout=15)
         assert "no-store" in response.headers.get("cache-control", "")
+
+
+class TestUnsubscribe:
+    """One-click unsubscribe must work from an email link, with no session."""
+
+    def _signed_token(self, alert_id: str) -> str:
+        from pakjobs_core.services.security import sign_unsubscribe
+
+        return sign_unsubscribe(alert_id)
+
+    def test_unsubscribe_without_signing_in(self, user_client, client) -> None:
+        alert = user_client.post("/alerts", json={"name": "Unsub flow", "frequency": "daily"}).json()
+        assert alert["is_active"] is True
+
+        # `client` has no session cookie — exactly like clicking a link from an inbox.
+        response = client.post(
+            "/alerts/unsubscribe",
+            json={"alert": alert["id"], "token": self._signed_token(alert["id"])},
+        )
+        assert response.status_code == 200
+
+        after = next(a for a in user_client.get("/alerts").json() if a["id"] == alert["id"])
+        assert after["is_active"] is False
+
+    def test_forged_token_is_rejected(self, user_client, client) -> None:
+        alert = user_client.post("/alerts", json={"name": "Forged", "frequency": "daily"}).json()
+        response = client.post(
+            "/alerts/unsubscribe", json={"alert": alert["id"], "token": "0" * 32}
+        )
+        assert response.status_code == 404
+
+        after = next(a for a in user_client.get("/alerts").json() if a["id"] == alert["id"])
+        assert after["is_active"] is True, "a forged token must not disable the alert"
+
+    def test_cannot_probe_for_valid_alert_ids(self, client) -> None:
+        """An unknown id and a bad signature must be indistinguishable."""
+        unknown = client.post(
+            "/alerts/unsubscribe",
+            json={"alert": "00000000-0000-0000-0000-000000000000", "token": "a" * 32},
+        )
+        assert unknown.status_code == 404
+
+    def test_unsubscribing_leaves_other_alerts_alone(self, user_client, client) -> None:
+        first = user_client.post("/alerts", json={"name": "Keep me", "frequency": "daily"}).json()
+        second = user_client.post("/alerts", json={"name": "Drop me", "frequency": "daily"}).json()
+
+        client.post(
+            "/alerts/unsubscribe",
+            json={"alert": second["id"], "token": self._signed_token(second["id"])},
+        )
+
+        alerts = {a["id"]: a["is_active"] for a in user_client.get("/alerts").json()}
+        assert alerts[first["id"]] is True
+        assert alerts[second["id"]] is False

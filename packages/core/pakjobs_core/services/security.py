@@ -118,3 +118,21 @@ def hash_ip(ip: str | None) -> str | None:
 
 def constant_time_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a, b)
+
+
+def sign_unsubscribe(alert_id: str) -> str:
+    """Stateless, unguessable unsubscribe token for a single alert.
+
+    HMAC over the alert id keyed by the application secret. Nothing extra is stored, the link
+    cannot be forged or enumerated, and rotating JWT_SECRET invalidates every outstanding link.
+    Deliberately not time-limited: an unsubscribe link in an old email must still work, because
+    the alternative is a recipient who cannot stop the mail.
+    """
+    digest = hmac.new(
+        settings.jwt_secret.encode(), f"unsubscribe:{alert_id}".encode(), hashlib.sha256
+    ).hexdigest()
+    return digest[:32]
+
+
+def verify_unsubscribe(alert_id: str, token: str) -> bool:
+    return constant_time_compare(sign_unsubscribe(alert_id), token or "")

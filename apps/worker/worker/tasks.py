@@ -33,6 +33,7 @@ from pakjobs_core.services.alerts import AlertMatchingService
 from pakjobs_core.services.expiration import ExpirationService
 from pakjobs_core.services.ingestion import IngestionService
 from pakjobs_core.services.notifications import NotificationService, render_alert_email
+from pakjobs_core.services.security import sign_unsubscribe
 from pakjobs_core.services.source_registry import due_sources, sync_default_sources
 
 
@@ -204,7 +205,14 @@ def dispatch_alerts(frequency: str = AlertFrequency.DAILY.value) -> dict[str, An
                 if user is None or user.status in ("suspended", "deleted"):
                     continue
 
-                subject, text, html = render_alert_email(alert.name, result.jobs, settings.web_base_url)
+                unsubscribe_url = (
+                    f"{settings.web_base_url}/unsubscribe"
+                    f"?alert={alert.id}&token={sign_unsubscribe(str(alert.id))}"
+                )
+                subject, text, html = render_alert_email(
+                    alert.name, result.jobs, settings.web_base_url,
+                    unsubscribe_url=unsubscribe_url,
+                )
                 notification = notifier.queue(
                     user=user, subject=subject, body=text, notification_type="job_alert",
                     payload={
@@ -213,7 +221,14 @@ def dispatch_alerts(frequency: str = AlertFrequency.DAILY.value) -> dict[str, An
                         "count": len(result.jobs),
                     },
                 )
-                sent = notifier.deliver(notification, to_email=user.email, html_body=html)
+                sent = notifier.deliver(
+                    notification, to_email=user.email, html_body=html,
+                    # RFC 8058: lets Gmail/Outlook show a native one-click unsubscribe.
+                    headers={
+                        "List-Unsubscribe": f"<{unsubscribe_url}>",
+                        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                    },
+                )
                 matcher.record_matches(alert, result.jobs, notified=sent)
                 if sent:
                     notified += 1
