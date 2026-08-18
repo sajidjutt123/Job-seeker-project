@@ -400,3 +400,44 @@ class TestAIGracefulDegradation:
         # With AI disabled this must still return a usable summary.
         assert payload["summary"]
         assert payload["used_ai"] is False
+
+
+class TestFrontendRouteGuards:
+    """The frontend's three-layer guard, verified over real HTTP.
+
+    Layer 1 (edge proxy) must redirect signed-out visitors without rendering; layers 2 and 3
+    (server component + API) are covered by TestAdminAuthorization above.
+    """
+
+    WEB_URL = os.environ.get("TEST_WEB_URL", "http://localhost:3000")
+
+    @staticmethod
+    def _web_available() -> bool:
+        try:
+            return httpx.get(f"{TestFrontendRouteGuards.WEB_URL}/", timeout=5).status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    @pytest.mark.parametrize("path", ["/admin", "/dashboard", "/dashboard/saved", "/dashboard/alerts"])
+    def test_signed_out_visitors_are_redirected(self, path: str) -> None:
+        if not self._web_available():
+            pytest.skip("web server is not running")
+        response = httpx.get(f"{self.WEB_URL}{path}", follow_redirects=False, timeout=15)
+        assert response.status_code in (307, 308)
+        location = response.headers["location"]
+        assert "/login" in location
+        # The originally requested page is preserved so sign-in returns the user there.
+        assert "next=" in location
+
+    @pytest.mark.parametrize("path", ["/", "/jobs", "/login", "/register", "/sources", "/about"])
+    def test_public_pages_are_not_gated(self, path: str) -> None:
+        if not self._web_available():
+            pytest.skip("web server is not running")
+        assert httpx.get(f"{self.WEB_URL}{path}", follow_redirects=False, timeout=15).status_code == 200
+
+    def test_redirect_is_never_cached(self) -> None:
+        """A cached per-visitor redirect would sign everyone out (or let anyone in)."""
+        if not self._web_available():
+            pytest.skip("web server is not running")
+        response = httpx.get(f"{self.WEB_URL}/dashboard", follow_redirects=False, timeout=15)
+        assert "no-store" in response.headers.get("cache-control", "")
