@@ -1,0 +1,31 @@
+[project]
+name = "pakjobs-core"
+version = "0.1.0"
+description = "Shared domain core for RozgarPK: models, services, connectors, ingestion pipeline."
+requires-python = ">=3.11"
+dependencies = [
+  "sqlalchemy[asyncio]>=2.0.30",
+  "alembic>=1.13",
+  "psycopg[binary]>=3.1",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.2",
+  "email-validator>=2.1",
+  "argon2-cffi>=23.1",
+  "pyjwt>=2.8",
+  "httpx>=0.27",
+  "feedparser>=6.0",
+  "rapidfuzz>=3.9",
+  "structlog>=24.1",
+  "redis>=5.0",
+  "boto3>=1.34",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pakjobs_core*"]
