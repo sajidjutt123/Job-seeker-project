@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "RozgarPK base",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": true,
+    "jsx": "preserve",
+    "incremental": true
+  },
+  "exclude": ["node_modules", ".next", "dist", "build"]
+}

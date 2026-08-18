@@ -1,0 +1,179 @@
+# ---------------------------------------------------------------------------
+# Full local/staging stack. Production deployments should replace `postgres` and
+# `redis` with managed services and keep only the app services.
+#
+#   docker compose -f infrastructure/docker/docker-compose.yml up --build
+# ---------------------------------------------------------------------------
+name: rozgar
+
+x-app-env: &app-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rozgar}:${POSTGRES_PASSWORD:-rozgar}@postgres:5432/${POSTGRES_DB:-rozgar}
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:3000}
+  API_BASE_URL: ${API_BASE_URL:-http://localhost:8000}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_JSON: ${LOG_JSON:-true}
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+  EMAIL_FROM: ${EMAIL_FROM:-RozgarPK <no-reply@rozgar.pk>}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/api/v1/auth/google/callback}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  AI_ENABLED: ${AI_ENABLED:-false}
+  AI_PROVIDER: ${AI_PROVIDER:-null}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  ENABLE_SEED_SOURCES: ${ENABLE_SEED_SOURCES:-false}
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  STORAGE_PROVIDER: ${STORAGE_PROVIDER:-none}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+  S3_BUCKET: ${S3_BUCKET:-}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rozgar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rozgar}
+      POSTGRES_DB: ${POSTGRES_DB:-rozgar}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rozgar} -d ${POSTGRES_DB:-rozgar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Runs migrations once, then exits. Everything else waits for it to succeed.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+    environment: *app-env
+    working_dir: /app/apps/api
+    command: >
+      sh -c "alembic upgrade head &&
+             python /app/infrastructure/scripts/manage.py sync-sources"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+    restart: unless-stopped
+    environment: *app-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+    restart: unless-stopped
+    environment: *app-env
+    working_dir: /app/apps/worker
+    command: >
+      celery -A worker.celery_app worker
+      --loglevel=info
+      -Q default,ingestion,maintenance,notifications
+      --concurrency=${WORKER_CONCURRENCY:-4}
+      --max-tasks-per-child=200
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A worker.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  beat:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+    restart: unless-stopped
+    environment: *app-env
+    working_dir: /app/apps/worker
+    # Exactly one beat instance must run, or every schedule fires multiple times.
+    command: celery -A worker.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_SITE_URL: ${WEB_BASE_URL:-http://localhost:3000}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: http://api:8000
+      NEXT_PUBLIC_SITE_URL: ${WEB_BASE_URL:-http://localhost:3000}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+  # Optional Celery monitoring UI. Start with: --profile monitoring
+  flower:
+    image: mher/flower:2.0
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      FLOWER_PORT: 5555
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:-admin:changeme}
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# API image. Also used for the worker and beat (same code, different command),
+# so one build serves all three Python deployables.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# libpq is needed by psycopg; curl provides the container healthcheck.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- dependency layer (cached independently of application code) ----
+FROM base AS deps
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY apps/api/requirements.txt /tmp/requirements.txt
+RUN pip install --prefix=/install -r /tmp/requirements.txt
+
+# ---- runtime ----
+FROM base AS runtime
+
+COPY --from=deps /install /usr/local
+
+# Never run as root.
+RUN groupadd --system --gid 1001 rozgar \
+    && useradd --system --uid 1001 --gid rozgar --create-home rozgar
+
+COPY --chown=rozgar:rozgar packages/core /app/packages/core
+COPY --chown=rozgar:rozgar apps/api /app/apps/api
+COPY --chown=rozgar:rozgar apps/worker /app/apps/worker
+COPY --chown=rozgar:rozgar infrastructure/scripts /app/infrastructure/scripts
+
+RUN pip install --no-deps -e /app/packages/core
+
+ENV PYTHONPATH=/app/apps/api:/app/apps/worker:/app
+
+USER rozgar
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:8000/health/live || exit 1
+
+# Workers are bound by IO, not CPU; tune --workers via the compose/orchestrator command.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]
