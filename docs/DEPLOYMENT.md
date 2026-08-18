@@ -24,6 +24,8 @@
 - [ ] `DATABASE_URL` points at a managed Postgres with automated backups
 - [ ] `alembic upgrade head` has run
 - [ ] An admin user exists
+- [ ] `INTERNAL_API_KEY` is set on **both** the API and the web tier (same value)
+- [ ] `TRUSTED_PROXIES` lists your load balancer / web tier, so client IPs resolve correctly
 - [ ] `/health` returns `ok` with an empty `warnings` array
 
 `GET /health` returns a `warnings` array that flags every one of the misconfigurations above.
@@ -61,6 +63,21 @@ The browser only ever calls same-origin `/api/*`, which `next.config.ts` rewrite
 browser. Set `CORS_ORIGINS` on the API to your frontend origin anyway, for direct API clients.
 
 ---
+
+## Rate limiting and client IPs
+
+Two settings work together, and getting them wrong is a real outage risk:
+
+- **`INTERNAL_API_KEY`** — a shared secret between the web tier and the API. Server-rendered
+  pages call the API on behalf of many visitors from one host; without this key their traffic is
+  charged to a single IP bucket and roughly a minute of normal traffic rate-limits the whole
+  site. Set the same value on both services. It is server-side only and never reaches a browser.
+
+- **`TRUSTED_PROXIES`** — hosts whose `X-Forwarded-For` may be believed (comma-separated IPs or
+  CIDRs). Empty means the header is ignored and the socket peer is used. Set this to your load
+  balancer and web tier. If you leave it empty behind a proxy, every visitor looks like the
+  proxy; if you set it to `*` on a publicly reachable API, anyone can spoof the header to reset
+  their own rate limit.
 
 ## Cloudflare
 

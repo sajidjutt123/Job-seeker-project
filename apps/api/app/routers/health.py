@@ -32,10 +32,17 @@ async def health(response: Response):
         "database": await _check_database(),
         "redis": _check_redis(),
         "worker": await _check_worker(),
+        "storage": _check_storage(),
     }
-    degraded = [name for name, c in components.items() if c.status != "ok"]
-    # A stale worker is degraded, not down — the site still serves jobs.
-    overall = "ok" if not degraded else ("degraded" if degraded == ["worker"] else "unhealthy")
+    # Storage and the worker are not on the critical read path: the site still serves jobs
+    # without them, so they degrade rather than fail the deployment.
+    NON_CRITICAL = {"worker", "storage"}
+    failing = [name for name, c in components.items() if c.status not in ("ok", "disabled")]
+    overall = (
+        "ok" if not failing
+        else "degraded" if set(failing) <= NON_CRITICAL
+        else "unhealthy"
+    )
     if overall == "unhealthy":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
@@ -103,6 +110,18 @@ async def _check_worker() -> HealthComponent:
         )
     except Exception as exc:  # noqa: BLE001
         return HealthComponent(status="error", detail=_safe(exc))
+
+
+def _check_storage() -> HealthComponent:
+    """Reports readiness without a network call, so a missing bucket is visible before first use."""
+    from pakjobs_core.services.storage import check_configuration
+
+    status = check_configuration()
+    if status.provider == "none":
+        return HealthComponent(status="disabled", detail="No file storage configured (not required)")
+    if not status.configured:
+        return HealthComponent(status="error", detail="; ".join(status.problems))
+    return HealthComponent(status="ok", detail=f"provider={status.provider}")
 
 
 def _safe(exc: Exception) -> str:

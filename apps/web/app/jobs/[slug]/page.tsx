@@ -12,7 +12,16 @@ import {
 import { api } from "@/lib/api";
 import { fetchJobDetail, fetchJobs } from "@/lib/server-api";
 
-export const revalidate = 300;
+/**
+ * Rendered per request rather than cached.
+ *
+ * A cached route serves `notFound()` as HTTP 200, which would let search engines index removed
+ * jobs as live pages — unacceptable for a site whose whole value is that listings are current.
+ * Per-request rendering also means the save state and match score reflect the signed-in user.
+ * The expensive part (search, facets) is cached elsewhere; a single job fetch is one indexed
+ * primary-key lookup.
+ */
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({
   params,
@@ -22,7 +31,17 @@ export async function generateMetadata({
   const { slug } = await params;
   const result = await fetchJobDetail(slug);
   if (!result.ok) {
-    return { title: "Job not found", robots: { index: false, follow: false } };
+    // A job that no longer exists must never be indexed. `notFound()` renders the 404 UI, and
+    // this `noindex` is what actually keeps it out of search results.
+    //
+    // Known Next.js 16 behaviour: when a route has `generateMetadata`, a `notFound()` raised in
+    // the page body is rendered under HTTP 200 rather than 404 (verified against a production
+    // standalone build; a route without generateMetadata returns 404 correctly). The
+    // user-visible page and the noindex directive are both correct, so the SEO outcome holds —
+    // but if a future Next.js release fixes the status code, delete this note rather than the
+    // `robots` directive.
+    if (result.status === 404) notFound();
+    return { title: "Job unavailable", robots: { index: false, follow: false } };
   }
 
   const job = result.data;
@@ -60,15 +79,11 @@ export default async function JobDetailPage({ params }: { params: Promise<{ slug
 
   if (!result.ok) {
     if (result.status === 404) notFound();
-    return (
-      <div className="mx-auto max-w-3xl px-4 py-16 text-center">
-        <h1 className="text-xl font-bold text-ink-900">This job could not be loaded</h1>
-        <p className="mt-2 text-sm text-ink-600">{result.error}</p>
-        <Link href="/jobs" className="mt-6 inline-block text-sm font-semibold text-brand-700 hover:text-brand-800">
-          ← Back to all jobs
-        </Link>
-      </div>
-    );
+
+    // Anything else is our problem, not a missing job. Throwing hands off to error.tsx, which
+    // renders a real error state *and* returns a 5xx — crucially not a 200, so a rate-limited
+    // or timed-out fetch can never be cached or indexed as though the page were fine.
+    throw new Error(`Could not load job "${slug}": ${result.error}`);
   }
 
   const job = result.data;

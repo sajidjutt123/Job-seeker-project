@@ -110,6 +110,13 @@ class Settings(BaseSettings):
 
     # --- rate limiting ---
     rate_limit_enabled: bool = True
+    # Only trust X-Forwarded-For / X-Real-IP when the request arrives from one of these hosts.
+    # Comma-separated IPs or CIDRs, or "*" to trust any peer (only safe when the API is not
+    # publicly reachable). Empty means: never trust the header, use the socket peer.
+    trusted_proxies: str = ""
+    # Requests carrying a valid internal key skip IP-based limiting. This is what lets the
+    # Next.js server render pages for many users without them sharing one bucket.
+    internal_api_key: str = ""
     rate_limit_anon_per_minute: int = 60
     rate_limit_auth_per_minute: int = 180
 
@@ -135,11 +142,47 @@ class Settings(BaseSettings):
         """psycopg3 driver works for both sync and async; alembic uses the sync form."""
         return self.database_url.replace("+asyncpg", "+psycopg")
 
+    @property
+    def trusted_proxy_networks(self) -> list[str]:
+        return [p.strip() for p in self.trusted_proxies.split(",") if p.strip()]
+
+    def is_trusted_proxy(self, host: str | None) -> bool:
+        """Whether forwarding headers from `host` may be believed.
+
+        Anything else could spoof X-Forwarded-For to reset its own rate limit or poison the
+        hashed IP stored against a report, so the header is ignored unless the immediate peer
+        is a proxy we configured.
+        """
+        networks = self.trusted_proxy_networks
+        if not networks or not host:
+            return False
+        if "*" in networks:
+            return True
+
+        import ipaddress
+
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+
+        for entry in networks:
+            try:
+                if "/" in entry:
+                    if address in ipaddress.ip_network(entry, strict=False):
+                        return True
+                elif address == ipaddress.ip_address(entry):
+                    return True
+            except ValueError:
+                continue
+        return False
+
     def production_warnings(self) -> list[str]:
         """Configuration problems that must be fixed before going live."""
         problems: list[str] = []
         if not self.is_production:
             return problems
+
         if "change-me" in self.jwt_secret or len(self.jwt_secret) < 32:
             problems.append("JWT_SECRET is weak or unset")
         if not self.cookie_secure:
@@ -148,12 +191,21 @@ class Settings(BaseSettings):
             problems.append("ENABLE_SEED_SOURCES must be false in production")
         if self.email_provider == "console":
             problems.append("EMAIL_PROVIDER=console will not deliver real email")
+        if self.storage_provider != "none":
+            from_storage = []
+            if not self.s3_bucket:
+                from_storage.append("S3_BUCKET")
+            if not self.s3_access_key_id:
+                from_storage.append("S3_ACCESS_KEY_ID")
+            if from_storage:
+                problems.append(f"STORAGE_PROVIDER is set but {', '.join(from_storage)} is missing")
         return problems
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
 
 
 settings = get_settings()

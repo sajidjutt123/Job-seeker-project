@@ -193,3 +193,10 @@ covered by tests that assert every admin route 403s for a regular user.
   SMTP and Resend), and carries optional per-message headers so RFC 8058 one-click unsubscribe
   works; push, WhatsApp and Telegram are enum values awaiting adapters.
 - **Monetization** — featured/sponsored flags and `featured_until` are on the job model.
+
+- **Object storage** — `StorageAdapter` with a working S3-compatible implementation (AWS S3,
+  Cloudflare R2, MinIO, Spaces) plus presigned uploads. Defaults to `NullStorageAdapter`, which
+  refuses uploads with an actionable message rather than silently discarding a file. Nothing in
+  the aggregation flow needs it; it exists for employer logos and CV uploads. Uploads are
+  validated before any network call: content-type allowlist (SVG and HTML are rejected — both
+  execute script from your own origin), size cap, and keys sanitised against path traversal.

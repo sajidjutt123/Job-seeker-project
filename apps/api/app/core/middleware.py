@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import time
 import uuid
 from collections import deque
@@ -64,6 +65,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+def client_ip(request: Request) -> str:
+    """The caller's real IP.
+
+    `X-Forwarded-For` is only believed when the immediate peer is a configured trusted proxy.
+    Otherwise any client could spoof the header and reset its own rate limit, or poison the
+    hashed IP recorded against a report or audit log entry.
+    """
+    peer = request.client.host if request.client else None
+    if settings.is_trusted_proxy(peer):
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            # Left-most entry is the original client; the rest are proxies in the chain.
+            return forwarded.split(",")[0].strip()
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip
+    return peer or "unknown"
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Fixed-window in-process limiter.
 
@@ -81,6 +101,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         if not settings.rate_limit_enabled or request.url.path.startswith(self.EXEMPT_PATHS):
+            return await call_next(request)
+
+        # Server-side rendering calls the API on behalf of many different visitors from a single
+        # host. Without this, one busy minute of normal traffic would rate-limit the entire site.
+        # The key is a shared secret between the web tier and the API, never sent to a browser.
+        if settings.internal_api_key and secrets.compare_digest(
+            request.headers.get("x-internal-key", ""), settings.internal_api_key
+        ):
             return await call_next(request)
 
         identity, limit = self._identify(request)
@@ -117,14 +145,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _identify(request: Request) -> tuple[str, int]:
+        """Resolve who to charge for this request, and their allowance."""
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer "):
             return f"token:{auth[7:40]}", settings.rate_limit_auth_per_minute
-        client_host = request.client.host if request.client else "unknown"
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            client_host = forwarded.split(",")[0].strip()
-        return f"ip:{hash_ip(client_host)}", settings.rate_limit_anon_per_minute
+
+        # A signed-in browser is identified by its session cookie, so one user's activity does
+        # not consume a shared IP bucket (households, offices and mobile carriers NAT heavily —
+        # a whole university would otherwise share 60 requests a minute).
+        access_cookie = request.cookies.get("rozgar_access")
+        if access_cookie:
+            return f"session:{access_cookie[:40]}", settings.rate_limit_auth_per_minute
+
+        return f"ip:{hash_ip(client_ip(request))}", settings.rate_limit_anon_per_minute
 
 
 def register_middleware(app: FastAPI) -> None:

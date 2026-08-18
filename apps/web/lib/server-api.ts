@@ -7,7 +7,7 @@
  *     error state rather than a 500.
  */
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import { api, ApiError, buildQuery, type RequestOptions } from "./api";
 import type {
@@ -20,6 +20,31 @@ export async function cookieHeader(): Promise<string> {
     .getAll()
     .map((c) => `${c.name}=${c.value}`)
     .join("; ");
+}
+
+/**
+ * Headers every server-side API call must carry.
+ *
+ * SSR calls the API on behalf of many different visitors from one host. Two things follow:
+ *
+ *  - `x-internal-key` identifies the web tier as a trusted caller so its traffic is not charged
+ *    to a single shared IP bucket. Without it, one busy minute rate-limits the whole site.
+ *  - `x-forwarded-for` passes the real visitor's IP through, so per-visitor limiting and hashed
+ *    IP records stay accurate. The API only believes this header from a trusted proxy.
+ *
+ * The key is server-only (no NEXT_PUBLIC_ prefix) and never reaches the browser.
+ */
+async function internalHeaders(): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+
+  const key = process.env.INTERNAL_API_KEY;
+  if (key) result["x-internal-key"] = key;
+
+  const incoming = await headers();
+  const forwarded = incoming.get("x-forwarded-for") ?? incoming.get("x-real-ip");
+  if (forwarded) result["x-forwarded-for"] = forwarded;
+
+  return result;
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string; status: number; code: string };
@@ -42,7 +67,20 @@ export async function safe<T>(fn: () => Promise<T>): Promise<Result<T>> {
 }
 
 async function authed(options: RequestOptions = {}): Promise<RequestOptions> {
-  return { ...options, cookieHeader: await cookieHeader(), revalidate: false };
+  return {
+    ...options,
+    cookieHeader: await cookieHeader(),
+    headers: { ...(options.headers as Record<string, string>), ...(await internalHeaders()) },
+    revalidate: false,
+  };
+}
+
+/** For cacheable, non-user-specific fetches: internal key, but no cookies. */
+async function shared(options: RequestOptions = {}): Promise<RequestOptions> {
+  return {
+    ...options,
+    headers: { ...(options.headers as Record<string, string>), ...(await internalHeaders()) },
+  };
 }
 
 /* ------------------------------------------------------------------ jobs -- */
@@ -90,7 +128,7 @@ export async function fetchJobDetail(slug: string): Promise<Result<JobDetail>> {
 
 export async function fetchJobFacets(): Promise<Result<JobFacets>> {
   // Homepage counts change slowly; a short cache keeps first load fast.
-  return safe(() => api.get<JobFacets>("/jobs/facets", { revalidate: 300 }));
+  return safe(async () => api.get<JobFacets>("/jobs/facets", await shared({ revalidate: 300 })));
 }
 
 export async function fetchRecommended(limit = 8): Promise<Result<JobListItem[]>> {
@@ -100,11 +138,11 @@ export async function fetchRecommended(limit = 8): Promise<Result<JobListItem[]>
 /* --------------------------------------------------------------- catalog -- */
 
 export async function fetchFilterOptions(): Promise<Result<FilterOptions>> {
-  return safe(() => api.get<FilterOptions>("/filters", { revalidate: 3600 }));
+  return safe(async () => api.get<FilterOptions>("/filters", await shared({ revalidate: 3600 })));
 }
 
 export async function fetchPublicSources(): Promise<Result<PublicSource[]>> {
-  return safe(() => api.get<PublicSource[]>("/sources", { revalidate: 600 }));
+  return safe(async () => api.get<PublicSource[]>("/sources", await shared({ revalidate: 600 })));
 }
 
 /* ------------------------------------------------------------------ user -- */

@@ -116,7 +116,22 @@ python infrastructure/scripts/manage.py stats
 pytest                      # everything
 pytest tests/unit           # pure logic — no database, fast
 pytest tests/integration    # real Postgres + running API
+pytest tests/e2e            # user journeys through the running frontend
 ```
+
+**Layers.** Unit tests cover the pipeline as pure functions. Integration tests run the real
+ingestion pipeline against a throwaway Postgres database and exercise the HTTP API. E2E tests
+drive the **frontend** over HTTP the way a browser does — following redirects, carrying cookies
+across requests and asserting on rendered HTML — which catches pages that render but show an
+error state, redirects that never fire, and SSR that drops the session.
+
+E2E tests give each test a distinct `X-Forwarded-For`, because the web tier forwards the
+visitor's IP to the API; without it the whole suite shares one rate-limit bucket.
+
+**Adding Playwright.** For click-level interaction and visual regression, add
+`@playwright/test` in `apps/web` and drive the same journeys in a real browser. The current
+suite covers them at the transport level; the browser binary could not be downloaded in this
+environment, so it was not added speculatively.
 
 **242 tests.** Integration tests create a throwaway database per session and roll back every test,
 so they never touch your development data. API tests skip automatically if the server is not
