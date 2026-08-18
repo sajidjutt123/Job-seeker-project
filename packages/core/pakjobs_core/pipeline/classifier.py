@@ -127,11 +127,22 @@ CATEGORY_RULES: dict[str, tuple[tuple[str, float], ...]] = {
     ),
 }
 
-_COMPILED_RULES: dict[str, tuple[tuple[re.Pattern[str], float], ...]] = {
-    category: tuple(
-        (re.compile(r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z])", re.IGNORECASE), weight)
-        for kw, weight in rules
+def _keyword_pattern(keyword: str) -> re.Pattern[str]:
+    """Whole-word match that still accepts a simple English plural.
+
+    Job titles pluralise freely ("Looking for Senior Software Developers"), so a strict
+    `(?![a-z])` boundary silently misses them and the job falls through to `other`. Allowing an
+    optional trailing `s`/`es` recovers those without loosening the match enough to create false
+    positives — "go" still cannot match "going", because only s/es is permitted, not any suffix.
+    """
+    return re.compile(
+        r"(?<![a-z0-9])" + re.escape(keyword) + r"(?:e?s)?(?![a-z])",
+        re.IGNORECASE,
     )
+
+
+_COMPILED_RULES: dict[str, tuple[tuple[re.Pattern[str], float], ...]] = {
+    category: tuple((_keyword_pattern(kw), weight) for kw, weight in rules)
     for category, rules in CATEGORY_RULES.items()
 }
 
@@ -139,6 +150,11 @@ _COMPILED_RULES: dict[str, tuple[tuple[re.Pattern[str], float], ...]] = {
 # a single strong title keyword (weight 5 x 3.0 = 15) always wins, while weak body-only evidence
 # does not.
 MIN_FUNCTIONAL_SCORE = 4.0
+
+# Below this confidence the classifier assigns `other` instead of guessing. Tuned against real
+# ingested data: genuine single-keyword title matches land at ~0.6+, while incidental body-text
+# matches ("security" inside boilerplate) land below 0.3.
+MIN_CONFIDENCE_TO_ASSIGN = 0.30
 
 _GOVERNMENT_HINTS = re.compile(
     r"\b(government|govt|ministry|federal|provincial|public sector|fpsc|ppsc|spsc|kppsc|bpsc|nts|ots|pts|"
@@ -247,6 +263,22 @@ def classify_job(
 
     runner_up = next((s for c, s in ranked if c != category), 0.0)
     confidence = _confidence(top_score, runner_up)
+
+    # A confident-looking wrong label is worse than an honest "other". Below this threshold the
+    # evidence is typically a single incidental keyword in body text ("security" in a boilerplate
+    # paragraph scoring a job as Accounting), so fall back rather than mislabel it. The job stays
+    # fully searchable by keyword; it just does not pollute a category filter it does not belong in.
+    if confidence < MIN_CONFIDENCE_TO_ASSIGN and category != JobCategorySlug.OTHER:
+        if is_internship:
+            category = JobCategorySlug.INTERNSHIPS
+        elif is_government:
+            category = JobCategorySlug.GOVERNMENT
+        else:
+            # Preserve the discarded guess as a secondary hint for admin review.
+            if category not in secondary:
+                secondary.insert(0, category)
+            category = JobCategorySlug.OTHER
+        secondary = [c for c in secondary if c != category][:3]
 
     return ClassificationResult(
         category=category,

@@ -113,6 +113,57 @@ class TestClassification:
         assert classify_job(title="Associate", description="").confidence < 0.6
 
     @pytest.mark.parametrize(
+        "title,expected",
+        [
+            ("Looking for Senior Software Developers", JobCategorySlug.SOFTWARE_ENGINEERING),
+            ("Hiring Data Scientists", JobCategorySlug.DATA_SCIENCE),
+            ("Network Engineers required", JobCategorySlug.NETWORKING),
+            ("We need Accountants", JobCategorySlug.ACCOUNTING),
+            ("Graphic Designers wanted", JobCategorySlug.DESIGN),
+        ],
+    )
+    def test_plural_titles_still_classify(self, title: str, expected: str) -> None:
+        """Job titles pluralise freely; a strict word boundary silently lost all of these."""
+        assert classify_job(title=title, description="").category == expected
+
+    def test_plural_allowance_does_not_create_false_positives(self) -> None:
+        # Only an s/es suffix is permitted, so "go" must still not match "going".
+        assert classify_job(title="Ongoing project management role", description="").category == (
+            JobCategorySlug.OTHER
+        )
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Chimoney Product Manager Hiring Challenge",
+            "Security Specialist (10h - week, Week 3)",
+            "PM Review: Role Assessment for Governance Restructure",
+        ],
+    )
+    def test_weak_evidence_falls_back_to_other(self, title: str) -> None:
+        """A confident-looking wrong label is worse than an honest 'other'.
+
+        These are real titles from live ingestion that previously landed in DevOps and
+        Accounting on the strength of one incidental keyword.
+        """
+        result = classify_job(title=title, description="")
+        assert result.category == JobCategorySlug.OTHER
+
+    def test_fallback_keeps_the_discarded_guess_for_review(self) -> None:
+        result = classify_job(title="Security Specialist (10h - week, Week 3)", description="")
+        assert result.category == JobCategorySlug.OTHER
+        # The rejected guess is retained so an admin can see what the classifier considered.
+        assert JobCategorySlug.OTHER not in result.secondary_categories
+
+    def test_internship_fallback_prefers_internships_over_other(self) -> None:
+        result = classify_job(
+            title="Summer Intern", description="A general internship placement.",
+            employment_type=EmploymentType.INTERNSHIP,
+        )
+        assert result.category in (JobCategorySlug.INTERNSHIPS, JobCategorySlug.OTHER)
+        assert result.is_internship
+
+    @pytest.mark.parametrize(
         "text,expected",
         [
             ("Must have a PhD in Computer Science", "phd"),

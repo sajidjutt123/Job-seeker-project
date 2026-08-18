@@ -155,6 +155,22 @@ class TestIdempotency:
         assert run2.updated_count == 1
         assert session.execute(select(func.count(Job.id))).scalar_one() == 1
 
+    def test_classification_metadata_is_refreshed(self, session, source) -> None:
+        """An improved classifier must update confidence/method, not just the label."""
+        service = IngestionService(session)
+        StubConnector.payloads = [raw()]
+        service.run_source(source, trigger="test")
+
+        job = session.execute(select(Job)).unique().scalar_one()
+        job.classification_confidence = 0.01
+        job.classification_method = "stale"
+        session.flush()
+
+        service.run_source(source, trigger="test")
+        session.refresh(job)
+        assert job.classification_confidence > 0.5
+        assert job.classification_method != "stale"
+
     def test_changed_fields_are_refreshed(self, session, source) -> None:
         service = IngestionService(session)
         StubConnector.payloads = [raw()]

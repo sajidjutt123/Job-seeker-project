@@ -335,6 +335,11 @@ class IngestionService:
             ("experience_level", n.experience_level),
             ("category", n.category),
             ("secondary_categories", n.secondary_categories),
+            # Must be refreshed alongside `category`, otherwise an improved classifier updates the
+            # label but leaves the old confidence/method behind, and admin review shows a
+            # contradictory row.
+            ("classification_confidence", n.classification_confidence),
+            ("classification_method", n.classification_method),
             ("is_internship", n.is_internship),
             ("is_government", n.is_government),
             ("is_fresh_graduate_friendly", n.is_fresh_graduate_friendly),
